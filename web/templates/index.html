@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FlashShazam - Распознавание и скачивание музыки</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 30px;
+            font-size: 2em;
+        }
+        
+        .record-button {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            color: white;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            margin: 0 auto;
+            display: block;
+            transition: all 0.3s;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        .record-button:hover {
+            transform: scale(1.05);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+        }
+        
+        .record-button:active {
+            transform: scale(0.95);
+        }
+        
+        .record-button.recording {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            animation: pulse 1.5s infinite;
+        }
+        
+        .secondary-button {
+            background: transparent;
+            border: 2px solid #667eea;
+            color: #667eea;
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-size: 14px;
+            cursor: pointer;
+            display: block;
+            margin: 0 auto;
+            transition: all 0.3s;
+        }
+        
+        .secondary-button:hover {
+            background: #667eea;
+            color: white;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+        }
+        
+        .status {
+            text-align: center;
+            margin: 20px 0;
+            font-size: 16px;
+            color: #666;
+            min-height: 24px;
+        }
+        
+        .track-info {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            display: none;
+        }
+        
+        .track-info.show {
+            display: block;
+        }
+        
+        .track-info h2 {
+            color: #333;
+            margin-bottom: 15px;
+        }
+        
+        .track-info p {
+            color: #666;
+            margin: 8px 0;
+        }
+        
+        .track-cover {
+            width: 200px;
+            height: 200px;
+            border-radius: 10px;
+            margin: 15px auto;
+            display: block;
+            object-fit: cover;
+        }
+        
+        .player {
+            margin-top: 20px;
+            width: 100%;
+        }
+        
+        .player audio {
+            width: 100%;
+        }
+        
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .error {
+            color: #f5576c;
+            background: #ffe5e5;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎵 FlashShazam</h1>
+        
+        <button id="recordBtn" class="record-button">
+            🎤 Нажми для записи
+        </button>
+        
+        <button id="lastFileBtn" class="secondary-button" style="margin-top: 15px;">
+            ↺ Обработать последнюю запись
+        </button>
+        
+        <div id="status" class="status"></div>
+        
+        <div id="trackInfo" class="track-info">
+            <h2 id="trackTitle"></h2>
+            <p id="trackArtist"></p>
+            <img id="trackCover" class="track-cover" src="" alt="Cover">
+            <div class="player">
+                <audio id="audioPlayer" controls></audio>
+            </div>
+        </div>
+        
+        <div id="error" class="error" style="display: none;"></div>
+    </div>
+    
+    <script>
+        const recordBtn = document.getElementById('recordBtn');
+        const lastFileBtn = document.getElementById('lastFileBtn');
+        const status = document.getElementById('status');
+        const trackInfo = document.getElementById('trackInfo');
+        const trackTitle = document.getElementById('trackTitle');
+        const trackArtist = document.getElementById('trackArtist');
+        const trackCover = document.getElementById('trackCover');
+        const audioPlayer = document.getElementById('audioPlayer');
+        const errorDiv = document.getElementById('error');
+        
+        let isRecording = false;
+        let mediaRecorder = null;
+        let audioChunks = [];
+        
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream, {
+                    mimeType: 'audio/webm;codecs=opus'
+                });
+                
+                audioChunks = [];
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                    }
+                };
+                
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    await processAudio(audioBlob);
+                    
+                    // Останавливаем поток
+                    stream.getTracks().forEach(track => track.stop());
+                };
+                
+                mediaRecorder.start();
+                isRecording = true;
+                recordBtn.classList.add('recording');
+                recordBtn.textContent = '⏺ Запись...';
+                setStatus('🎤 Запись звука...', true);
+                
+                // Останавливаем запись через 15 секунд
+                setTimeout(() => {
+                    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                        mediaRecorder.stop();
+                    }
+                }, 15000);
+                
+            } catch (error) {
+                setStatus('❌ Ошибка');
+                showError('Не удалось получить доступ к микрофону: ' + error.message);
+                isRecording = false;
+                recordBtn.classList.remove('recording');
+                recordBtn.textContent = '🎤 Нажми для записи';
+            }
+        }
+        
+        async function processAudio(audioBlob) {
+            try {
+                setStatus('📤 Отправка аудио...', true);
+                
+                const formData = new FormData();
+                formData.append('audio', audioBlob, 'recording.webm');
+                
+                const response = await fetch('/api/process', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                handleResponse(response);
+            } catch (error) {
+                setStatus('❌ Ошибка');
+                showError('Ошибка соединения: ' + error.message);
+                isRecording = false;
+                recordBtn.classList.remove('recording');
+                recordBtn.textContent = '🎤 Нажми для записи';
+            }
+        }
+        
+        function setStatus(text, isLoading = false) {
+            status.innerHTML = isLoading ? `<span class="loading"></span> ${text}` : text;
+        }
+        
+        function showError(message) {
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+            setTimeout(() => {
+                errorDiv.style.display = 'none';
+            }, 5000);
+        }
+        
+        function showTrackInfo(data) {
+            trackTitle.textContent = data.recognition.title;
+            trackArtist.textContent = data.recognition.artist;
+            
+            if (data.download && data.download.cover) {
+                trackCover.src = data.download.cover;
+            }
+            
+            // Если есть аудио файл, показываем плеер
+            if (data.audioUrl) {
+                audioPlayer.src = data.audioUrl;
+            }
+            
+            trackInfo.classList.add('show');
+        }
+        
+        recordBtn.addEventListener('click', async () => {
+            if (isRecording) {
+                // Останавливаем запись при повторном нажатии
+                if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                    mediaRecorder.stop();
+                }
+                return;
+            }
+            
+            // Пробуем использовать браузерную запись, если не работает - используем серверную
+            try {
+                await startRecording();
+            } catch (error) {
+                console.log('Браузерная запись не работает, используем серверную:', error);
+                // Fallback на серверную запись
+                await serverRecord();
+            }
+        });
+        
+        async function serverRecord() {
+            isRecording = true;
+            recordBtn.classList.add('recording');
+            recordBtn.textContent = '⏺ Запись...';
+            setStatus('🎤 Запись звука на сервере...', true);
+            
+            try {
+                const response = await fetch('/api/process', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        duration: 15
+                    })
+                });
+                
+                handleResponse(response);
+            } catch (error) {
+                setStatus('❌ Ошибка');
+                showError('Ошибка соединения: ' + error.message);
+                isRecording = false;
+                recordBtn.classList.remove('recording');
+                recordBtn.textContent = '🎤 Нажми для записи';
+            }
+        }
+
+        lastFileBtn.addEventListener('click', async () => {
+            if (isRecording) return;
+            
+            setStatus('🔄 Обработка последнего файла...', true);
+            
+            try {
+                const response = await fetch('/api/process_last', {
+                    method: 'POST'
+                });
+                
+                handleResponse(response);
+            } catch (error) {
+                setStatus('❌ Ошибка');
+                showError('Ошибка соединения: ' + error.message);
+            }
+        });
+        
+        async function handleResponse(response) {
+            try {
+                setStatus('🔍 Распознавание трека...', true);
+                
+                const data = await response.json();
+                
+                if (data.success && data.recognition && data.recognition.success) {
+                    setStatus('⬇️ Скачивание трека...', true);
+                }
+                
+                if (data.success) {
+                    if (data.download && data.download.success) {
+                        setStatus('✅ Трек распознан и скачан!');
+                        showTrackInfo(data);
+                    } else {
+                        setStatus('✅ Трек распознан, но скачивание не удалось');
+                        showTrackInfo(data);
+                        if (data.download && data.download.error) {
+                            showError('Ошибка скачивания: ' + data.download.error);
+                        }
+                    }
+                } else {
+                    setStatus('❌ Ошибка');
+                    showError(data.error || 'Не удалось обработать запись');
+                }
+            } catch (error) {
+                setStatus('❌ Ошибка');
+                showError('Ошибка обработки ответа: ' + error.message);
+            } finally {
+                isRecording = false;
+                recordBtn.classList.remove('recording');
+                recordBtn.textContent = '🎤 Нажми для записи';
+            }
+        }
+    </script>
+</body>
+</html>
+
