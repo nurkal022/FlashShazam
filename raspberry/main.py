@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-FlashShazam для Raspberry Pi Zero 2W
-Консольная версия без веб-интерфейса
+FlashShazam для Raspberry Pi
+Консольная версия: распознавание + скачивание
 """
 
 import time
@@ -12,75 +12,86 @@ from shazam_recognizer import ShazamRecognizer
 from spotify_downloader import SpotifyDownloader
 from config import Config
 
+
 def main():
     print("=" * 60)
-    print("FlashShazam - Raspberry Pi Edition")
+    print("🎵 FlashShazam - Raspberry Pi Edition")
     print("=" * 60)
     
-    # Инициализация компонентов
-    recorder = AudioRecorder()
+    # Инициализация
+    # INMP441 обычно card 1, device 0 → index 1
+    recorder = AudioRecorder(input_device_index=1)
     recognizer = ShazamRecognizer()
     downloader = SpotifyDownloader()
     
-    print("\nКомпоненты инициализированы")
-    print(f"Длительность записи: {Config.RECORDING_DURATION} секунд")
-    print(f"Директория записей: {Config.RECORDINGS_DIR}")
-    print(f"Директория загрузок: {Config.DOWNLOADS_DIR}")
+    print(f"\n✓ Длительность записи: {Config.RECORDING_DURATION} сек")
+    print(f"✓ Записи: {Config.RECORDINGS_DIR}/")
+    print(f"✓ Скачанные: {Config.DOWNLOADS_DIR}/")
     
     while True:
         print("\n" + "-" * 60)
-        print("Нажмите Enter для начала записи или 'q' для выхода...")
+        print("Нажмите Enter для записи | 'l' - последний файл | 'q' - выход")
         user_input = input().strip().lower()
         
         if user_input == 'q':
-            print("Выход...")
+            print("👋 Выход...")
             break
         
         try:
-            # 1. Запись аудио
-            print(f"\n[1/3] Запись аудио ({Config.RECORDING_DURATION} сек)...")
-            audio_file = recorder.record(Config.RECORDING_DURATION)
-            print(f"✓ Записано: {audio_file}")
+            # Определяем источник аудио
+            if user_input == 'l':
+                # Используем последний записанный файл
+                import glob
+                files = glob.glob(os.path.join(Config.RECORDINGS_DIR, "*.wav"))
+                if not files:
+                    print("❌ Нет записанных файлов")
+                    continue
+                audio_file = max(files, key=os.path.getctime)
+                print(f"📁 Используем: {os.path.basename(audio_file)}")
+            else:
+                # Записываем новое аудио
+                print(f"\n🎤 Запись ({Config.RECORDING_DURATION} сек)...")
+                audio_file = recorder.record(Config.RECORDING_DURATION)
+                print(f"✓ Записано: {audio_file}")
             
-            # 2. Распознавание
-            print("\n[2/3] Распознавание трека...")
-            recognition = recognizer.recognize_sync(audio_file)
+            # Распознавание
+            print("\n🔍 Распознавание...")
+            recognition = recognizer.recognize_file(audio_file)
             
             if not recognition.get('success'):
-                print(f"✗ Не удалось распознать: {recognition.get('error', 'Неизвестная ошибка')}")
+                print(f"❌ Не распознано: {recognition.get('error')}")
                 continue
             
             title = recognition['title']
             artist = recognition['artist']
-            print(f"✓ Распознано: {title} - {artist}")
+            spotify_url = recognition.get('spotify_url', '')
             
-            if recognition.get('cover_url'):
-                print(f"  Обложка: {recognition['cover_url']}")
+            print(f"\n🎵 {title} - {artist}")
             
-            # 3. Скачивание
-            print("\n[3/3] Скачивание трека...")
-            download_result = downloader.download_track(title, artist)
+            if recognition.get('apple_music_url'):
+                print(f"🍎 Apple Music: {recognition['apple_music_url']}")
             
-            if download_result.get('success') and download_result.get('file_path'):
-                print(f"✓ Скачано: {download_result['filename']}")
-                print(f"  Путь: {download_result['file_path']}")
-            elif download_result.get('success'):
-                print(f"✓ Метаданные получены, но файл не скачан")
-                print(f"  {download_result.get('error', '')}")
+            # Скачивание
+            print("\n📥 Скачивание...")
+            download = downloader.download_track(title, artist, spotify_url)
+            
+            if download.get('success'):
+                print(f"\n✅ Готово: {download['filename']}")
+                print(f"📁 Путь: {download['file_path']}")
             else:
-                print(f"✗ Ошибка скачивания: {download_result.get('error', 'Неизвестная ошибка')}")
+                print(f"⚠️ Не удалось скачать: {download.get('error')}")
+                print("   Трек распознан, но скачивание недоступно")
             
             print("\n" + "=" * 60)
-            print("Готово!")
             
         except KeyboardInterrupt:
-            print("\n\nПрервано пользователем")
+            print("\n\n👋 Прервано")
             break
         except Exception as e:
-            print(f"\n✗ Ошибка: {e}")
+            print(f"\n❌ Ошибка: {e}")
             import traceback
             traceback.print_exc()
 
+
 if __name__ == '__main__':
     main()
-

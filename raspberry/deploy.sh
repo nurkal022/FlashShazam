@@ -1,78 +1,74 @@
 #!/bin/bash
-# Скрипт деплоя на Raspberry Pi Zero 2W
+#
+# FlashShazam Raspberry Pi Deployment Script
+#
 
-echo "=================================="
-echo "FlashShazam - Деплой на Raspberry Pi"
-echo "=================================="
+set -e
 
-# Цвета для вывода
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-NC='\033[0m' # No Color
+echo "=========================================="
+echo "🎵 FlashShazam - Raspberry Pi Installer"
+echo "=========================================="
 
-# Функция проверки команды
-check_command() {
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}✓${NC} $1"
-    else
-        echo -e "${RED}✗${NC} $1"
-        exit 1
-    fi
-}
+# Обновление системы
+echo ""
+echo "[1/6] Обновление системы..."
+sudo apt-get update
+sudo apt-get upgrade -y
 
-# 1. Проверка системы
-echo -e "\n[1/7] Проверка системы..."
-uname -a
-check_command "Система проверена"
+# Установка системных зависимостей
+echo ""
+echo "[2/6] Установка системных зависимостей..."
+sudo apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-venv \
+    portaudio19-dev \
+    python3-pyaudio \
+    ffmpeg \
+    libffi-dev \
+    libssl-dev
 
-# 2. Обновление системы
-echo -e "\n[2/7] Обновление системы (может занять время)..."
-sudo apt update
-check_command "apt update"
+# Создание виртуального окружения
+echo ""
+echo "[3/6] Создание виртуального окружения..."
+python3 -m venv venv
+source venv/bin/activate
 
-# 3. Установка системных зависимостей
-echo -e "\n[3/7] Установка системных зависимостей..."
-sudo apt install -y python3 python3-pip python3-dev portaudio19-dev libportaudio2 ffmpeg libmp3lame-dev
-check_command "Системные зависимости установлены"
+# Установка Python зависимостей
+echo ""
+echo "[4/6] Установка Python зависимостей..."
+pip install --upgrade pip
+pip install -r requirements.txt
 
-# 4. Установка Python пакетов
-echo -e "\n[4/7] Установка Python пакетов..."
-pip3 install --upgrade pip
-pip3 install -r requirements.txt
-check_command "Python пакеты установлены"
-
-# 5. Проверка .env файла
-echo -e "\n[5/7] Проверка .env файла..."
+# Создание .env файла
+echo ""
+echo "[5/6] Настройка конфигурации..."
 if [ ! -f .env ]; then
-    echo -e "${RED}✗${NC} Файл .env не найден!"
-    echo "Создай .env файл с API ключами:"
-    echo "  cp .env.example .env"
-    echo "  nano .env"
-    exit 1
-else
-    echo -e "${GREEN}✓${NC} Файл .env найден"
+    cat > .env << EOF
+# Shazam API (shazam-api.com)
+SHAZAM_API_KEY=your_shazam_api_key_here
+
+# Apify для скачивания
+APIFY_TOKEN=your_apify_token_here
+
+# Spotify Web API
+SPOTIFY_CLIENT_ID=your_spotify_client_id_here
+SPOTIFY_CLIENT_SECRET=your_spotify_client_secret_here
+EOF
+    echo "✓ .env создан (заполните своими ключами!)"
 fi
 
-# 6. Проверка микрофона
-echo -e "\n[6/7] Проверка аудио устройств..."
-arecord -l
-check_command "Аудио устройства проверены"
-
-# 7. Создание директорий
-echo -e "\n[7/7] Создание директорий..."
+# Создание директорий
+echo ""
+echo "[6/6] Создание директорий..."
 mkdir -p recordings downloads
-check_command "Директории созданы"
 
-# Готово
-echo -e "\n=================================="
-echo -e "${GREEN}Установка завершена!${NC}"
-echo "=================================="
+echo ""
+echo "=========================================="
+echo "✅ Установка завершена!"
+echo "=========================================="
 echo ""
 echo "Запуск:"
-echo "  python3 main.py"
+echo "  source venv/bin/activate"
+echo "  python main.py"
 echo ""
-echo "Или:"
-echo "  chmod +x main.py"
-echo "  ./main.py"
-echo ""
-

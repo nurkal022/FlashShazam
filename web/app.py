@@ -40,7 +40,6 @@ def record_audio():
         duration = request.json.get('duration', Config.RECORDING_DURATION)
         device_index = request.json.get('device_index', None)
         
-        # Используем указанное устройство или по умолчанию
         if device_index is not None:
             recorder.input_device_index = device_index
         
@@ -65,8 +64,8 @@ def recognize_track():
                 'success': False,
                 'error': 'Аудио файл не найден'
             }), 400
-        
-        result = recognizer.recognize_sync(audio_file)
+
+        result = recognizer.recognize_file(audio_file)
         return jsonify(result)
     except Exception as e:
         return jsonify({
@@ -74,35 +73,40 @@ def recognize_track():
             'error': str(e)
         }), 500
 
-@app.route('/api/download', methods=['POST'])
-def download_track():
-    """Скачивает трек по названию и артисту"""
-    try:
-        track_name = request.json.get('track_name')
-        artist_name = request.json.get('artist_name')
-        
-        if not track_name or not artist_name:
-            return jsonify({
-                'success': False,
-                'error': 'Не указаны название трека или артист'
-            }), 400
-        
-        result = downloader.download_track(track_name, artist_name)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+
+def download_track_from_recognition(recognition):
+    """Скачивает трек на основе результатов распознавания"""
+    download_result = None
+    spotify_url = recognition.get('spotify_url')
+
+    if spotify_url:
+        print(f"🎵 Найден Spotify URL: {spotify_url}")
+        print("📥 Начинаем скачивание...")
+        download_result = downloader.download_by_spotify_url(spotify_url)
+    else:
+        # Если нет прямого URL, ищем по названию
+        print("🔍 Spotify URL не найден, ищем по названию...")
+        download_result = downloader.download_track(
+            recognition['title'],
+            recognition['artist']
+        )
+
+    if download_result and download_result.get('success'):
+        print(f"✅ Скачано: {download_result.get('filename')}")
+    elif download_result:
+        print(f"⚠️ Ошибка скачивания: {download_result.get('error')}")
+    
+    return download_result
+
 
 @app.route('/api/process', methods=['POST'])
 def process_full():
     """Полный цикл: запись -> распознавание -> скачивание"""
     try:
         # Поддерживаем два режима:
-        # 1. Запись с сервера (Raspberry Pi) - через параметр duration
-        # 2. Загрузка файла от браузера - через multipart/form-data
-        
+        # 1. Загрузка файла от браузера - через multipart/form-data
+        # 2. Запись с сервера (Raspberry Pi) - через параметр duration
+
         if 'audio' in request.files:
             # Режим загрузки от браузера
             audio_file = request.files['audio']
@@ -111,61 +115,57 @@ def process_full():
                     'success': False,
                     'error': 'Файл не выбран'
                 }), 400
-            
+
             # Сохраняем файл
             from datetime import datetime
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"recording_{timestamp}.webm"
             filepath = os.path.join(Config.RECORDINGS_DIR, filename)
             audio_file.save(filepath)
-            
+
             # Конвертируем webm в wav для распознавания
-            print(f"Конвертация {filepath} в WAV...")
+            print(f"📁 Конвертация {filepath} в WAV...")
             audio_file_path = convert_to_wav(filepath)
         else:
             # Режим записи с сервера (Raspberry Pi)
             duration = request.json.get('duration', Config.RECORDING_DURATION) if request.is_json else Config.RECORDING_DURATION
             device_index = request.json.get('device_index', None) if request.is_json else None
-            
+
             if device_index is not None:
                 recorder.input_device_index = device_index
-            
+
             audio_file_path = recorder.record(duration)
-        
-        # 2. Распознавание
-        print(f"Распознавание трека из файла: {audio_file_path}")
-        recognition = recognizer.recognize_sync(audio_file_path)
-        
+
+        # 2. Распознавание через Shazam
+        print(f"🔍 Распознавание трека из файла: {audio_file_path}")
+        recognition = recognizer.recognize_file(audio_file_path)
+
         if not recognition.get('success'):
             return jsonify({
                 'success': False,
                 'error': 'Не удалось распознать трек',
                 'recognition': recognition
             })
-        
-        print(f"Распознан трек: {recognition['title']} - {recognition['artist']}")
-        
-        # 3. Скачивание
-        print("Начало скачивания трека...")
-        download_result = downloader.download_track(
-            recognition['title'],
-            recognition['artist']
-        )
-        
-        print(f"Результат скачивания: success={download_result.get('success')}, error={download_result.get('error')}")
-        
+
+        print(f"✅ Распознан трек: {recognition['title']} - {recognition['artist']}")
+
+        # 3. Скачивание через Spotify
+        download_result = download_track_from_recognition(recognition)
+
         response_data = {
             'success': True,
             'recognition': recognition,
             'download': download_result
         }
-        
-        # Добавляем URL для проигрывания если файл скачан
-        if download_result.get('success') and download_result.get('filename'):
+
+        # Добавляем URL для воспроизведения если файл скачан
+        if download_result and download_result.get('success') and download_result.get('filename'):
             response_data['audioUrl'] = f'/api/downloads/{download_result["filename"]}'
-        
+
         return jsonify(response_data)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({
             'success': False,
             'error': str(e)
@@ -176,7 +176,7 @@ def process_last():
     """Обрабатывает последний записанный файл"""
     try:
         import glob
-        
+
         # Ищем файлы в директории записей
         files = glob.glob(os.path.join(Config.RECORDINGS_DIR, "*"))
         if not files:
@@ -184,53 +184,49 @@ def process_last():
                 'success': False,
                 'error': 'Нет записанных файлов'
             }), 404
-            
+
         # Берем самый новый файл
         last_file = max(files, key=os.path.getctime)
-        print(f"Обработка последнего файла: {last_file}")
-        
+        print(f"📁 Обработка последнего файла: {last_file}")
+
         # Если это webm, конвертируем в wav
         if last_file.lower().endswith('.webm'):
-            print(f"Конвертация {last_file} в WAV...")
+            print(f"📁 Конвертация {last_file} в WAV...")
             audio_file_path = convert_to_wav(last_file)
         else:
             audio_file_path = last_file
-            
-        # 2. Распознавание
-        print(f"Распознавание трека из файла: {audio_file_path}")
-        recognition = recognizer.recognize_sync(audio_file_path)
-        
+
+        # 2. Распознавание через Shazam
+        print(f"🔍 Распознавание трека из файла: {audio_file_path}")
+        recognition = recognizer.recognize_file(audio_file_path)
+
         if not recognition.get('success'):
             return jsonify({
                 'success': False,
                 'error': 'Не удалось распознать трек',
                 'recognition': recognition
             })
-        
-        print(f"Распознан трек: {recognition['title']} - {recognition['artist']}")
-        
-        # 3. Скачивание
-        print("Начало скачивания трека...")
-        download_result = downloader.download_track(
-            recognition['title'],
-            recognition['artist']
-        )
-        
-        print(f"Результат скачивания: success={download_result.get('success')}, error={download_result.get('error')}")
-        
+
+        print(f"✅ Распознан трек: {recognition['title']} - {recognition['artist']}")
+
+        # 3. Скачивание через Spotify
+        download_result = download_track_from_recognition(recognition)
+
         response_data = {
             'success': True,
             'recognition': recognition,
             'download': download_result
         }
-        
-        # Добавляем URL для проигрывания если файл скачан
-        if download_result.get('success') and download_result.get('filename'):
+
+        # Добавляем URL для воспроизведения если файл скачан
+        if download_result and download_result.get('success') and download_result.get('filename'):
             response_data['audioUrl'] = f'/api/downloads/{download_result["filename"]}'
-        
+
         return jsonify(response_data)
-            
+
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({
             'success': False,
             'error': str(e)
@@ -249,9 +245,9 @@ def serve_download(filename):
     """Отдает скачанные MP3 файлы"""
     filepath = os.path.join(Config.DOWNLOADS_DIR, filename)
     if os.path.exists(filepath):
-        return send_file(filepath)
+        return send_file(filepath, mimetype='audio/mpeg')
     return jsonify({'error': 'File not found'}), 404
+
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5001)
-

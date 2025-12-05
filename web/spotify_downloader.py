@@ -1,200 +1,288 @@
 import requests
+import time
 import os
-import re
+import base64
 from datetime import datetime
-from mutagen.mp3 import MP3
-from mutagen.id3 import ID3, TIT2, TPE1, TALB, APIC
+from apify_client import ApifyClient
 from config import Config
 
+
 class SpotifyDownloader:
+    """Скачивание музыки через Apify Spotify Music MP3 Downloader"""
+    
     def __init__(self):
-        self.api_key = Config.RAPIDAPI_KEY
-        self.api_host = Config.RAPIDAPI_HOST
+        self.apify_token = Config.APIFY_TOKEN
+        # Новый actor (из примера)
+        self.actor_id = "D50jl7rp34h8YHRWg"
+        self.base_url = "https://api.apify.com/v2"
+        
+        # Spotify Web API
+        self.spotify_client_id = Config.SPOTIFY_CLIENT_ID
+        self.spotify_client_secret = Config.SPOTIFY_CLIENT_SECRET
+        self._spotify_token = None
+        self._token_expires = 0
+        
+        # Apify client
+        self.apify_client = ApifyClient(self.apify_token)
+    
+    def _get_spotify_token(self):
+        """Получает access token для Spotify API (Client Credentials Flow)"""
+        if self._spotify_token and time.time() < self._token_expires:
+            return self._spotify_token
+        
+        print("🔑 Получаем Spotify access token...")
+        
+        auth_string = f"{self.spotify_client_id}:{self.spotify_client_secret}"
+        auth_bytes = base64.b64encode(auth_string.encode()).decode()
+        
+        headers = {
+            "Authorization": f"Basic {auth_bytes}",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        
+        data = {"grant_type": "client_credentials"}
+        
+        response = requests.post(
+            "https://accounts.spotify.com/api/token",
+            headers=headers,
+            data=data,
+            timeout=10
+        )
+        
+        if response.status_code != 200:
+            print(f"❌ Ошибка получения токена: {response.status_code}")
+            return None
+        
+        token_data = response.json()
+        self._spotify_token = token_data["access_token"]
+        self._token_expires = time.time() + token_data.get("expires_in", 3600) - 60
+        
+        print("✅ Spotify token получен")
+        return self._spotify_token
+    
+    def search_spotify(self, track_name, artist_name, limit=5):
+        """Ищет трек в Spotify и возвращает список URL"""
+        token = self._get_spotify_token()
+        if not token:
+            return []
+        
+        query = f"track:{track_name} artist:{artist_name}"
+        print(f"🔍 Поиск в Spotify: {query}")
+        
+        headers = {"Authorization": f"Bearer {token}"}
+        params = {
+            "q": query,
+            "type": "track",
+            "limit": limit,
+            "market": "US"
+        }
+        
+        response = requests.get(
+            "https://api.spotify.com/v1/search",
+            headers=headers,
+            params=params,
+            timeout=10
+        )
+        
+        if response.status_code != 200:
+            print(f"❌ Ошибка поиска: {response.status_code}")
+            return []
+        
+        data = response.json()
+        tracks = data.get("tracks", {}).get("items", [])
+        
+        if not tracks:
+            print("⚠️ Треки не найдены")
+            return []
+        
+        # Возвращаем список URL
+        results = []
+        for track in tracks:
+            url = track.get("external_urls", {}).get("spotify")
+            name = track.get("name")
+            artist = track.get("artists", [{}])[0].get("name")
+            if url:
+                results.append({
+                    'url': url,
+                    'name': name,
+                    'artist': artist
+                })
+        
+        if results:
+            print(f"✅ Найдено {len(results)} треков")
+            print(f"🔗 Первый: {results[0]['name']} - {results[0]['artist']}")
+        
+        return results
 
-    def search_spotify_track(self, track_name, artist_name):
-        """Ищет трек через Spotify API"""
+    def download_by_spotify_url(self, spotify_url, retry=0):
+        """Скачивает трек по Spotify URL через Apify (через apify-client)"""
         try:
-            query = f"{track_name} {artist_name}"
-            
-            url = f"https://{self.api_host}/search"
-            querystring = {
-                "q": query,
-                "type": "multi",
-                "limit": "5",
-                "offset": "0",
-                "noOfTopResults": "5"
+            print(f"🎵 Запускаем скачивание: {spotify_url}" + (f" (попытка {retry + 1})" if retry > 0 else ""))
+
+            run_input = {
+                "links": [spotify_url],
+                "proxyConfiguration": {
+                    "useApifyProxy": True,
+                    "apifyProxyGroups": ["RESIDENTIAL"],
+                },
             }
+
+            run = self.apify_client.actor(self.actor_id).call(run_input=run_input)
+            if run is None:
+                return {'success': False, 'error': 'Apify run failed'}
+
+            dataset_id = run.get("defaultDatasetId")
+            if not dataset_id:
+                return {'success': False, 'error': 'Нет defaultDatasetId'}
+
+            results = list(self.apify_client.dataset(dataset_id).iterate_items())
+            if not results:
+                return {'success': False, 'error': 'Нет результатов от Apify'}
+
+            track_result = results[0].get("result", {}) if isinstance(results[0], dict) else results[0]
+
+            if track_result.get("error"):
+                error_msg = track_result.get('message', 'Трек не найден')
+                if retry < 1 and "not found" in error_msg.lower():
+                    print(f"⚠️ Не найдено, пробуем ещё раз...")
+                    time.sleep(2)
+                    return self.download_by_spotify_url(spotify_url, retry + 1)
+                return {'success': False, 'error': error_msg}
+
+            title = track_result.get('title', 'Unknown')
+            thumbnail = track_result.get('thumbnail', '')
+            medias = track_result.get('medias', [])
+
+            if not medias:
+                return {'success': False, 'error': 'Нет ссылки на MP3'}
+
+            mp3_url = medias[0].get('url')
+            if not mp3_url:
+                return {'success': False, 'error': 'Пустая ссылка на MP3'}
+
+            print(f"📥 Скачиваем: {title}")
+            mp3_response = requests.get(mp3_url, stream=True, timeout=120)
+            mp3_response.raise_for_status()
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
+            filename = f"{safe_title}_{timestamp}.mp3"
+            filepath = os.path.join(Config.DOWNLOADS_DIR, filename)
+
+            with open(filepath, 'wb') as f:
+                for chunk in mp3_response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+
+            file_size = os.path.getsize(filepath)
+            print(f"✅ Скачано: {filename} ({file_size / 1024 / 1024:.2f} MB)")
             
-            headers = {
-                "x-rapidapi-key": self.api_key,
-                "x-rapidapi-host": self.api_host
+            return {
+                'success': True,
+                'file_path': filepath,
+                'filename': filename,
+                'title': title,
+                'thumbnail': thumbnail,
+                'file_size': file_size
             }
-            
-            print(f"Поиск трека: {query}")
-            response = requests.get(url, headers=headers, params=querystring, timeout=10)
-            print(f"Статус поиска: {response.status_code}")
-            
-            if response.status_code == 200:
-                result = response.json()
-                print(f"Ответ API поиска (кратко): success={result.get('success')}, data keys={list(result.get('data', {}).keys())}")
-                
-                # Ищем в результатах треки (сначала topResults, потом tracks)
-                data = result.get('data', {})
-                tracks = data.get('topResults', {}).get('items', [])
-                
-                # Фильтруем только треки (type='track')
-                tracks = [t for t in tracks if t.get('type') == 'track']
-                
-                if not tracks:
-                    # Если в topResults нет, ищем в tracks
-                    tracks = data.get('tracks', {}).get('items', [])
-                
-                if tracks:
-                    # Берем первый трек
-                    track = tracks[0]
-                    # URI формат: spotify:track:ID -> преобразуем в URL
-                    uri = track.get('uri', '')
-                    if uri.startswith('spotify:track:'):
-                        track_id = uri.replace('spotify:track:', '')
-                        spotify_url = f'https://open.spotify.com/track/{track_id}'
-                    else:
-                        spotify_url = track.get('external_urls', {}).get('spotify', '')
-                    
-                    if spotify_url:
-                        print(f"Найден трек: {track.get('name')} от {track.get('artists', {}).get('items', [{}])[0].get('profile', {}).get('name', 'unknown')}")
-                        print(f"Spotify URL: {spotify_url}")
-                        return {'success': True, 'spotify_url': spotify_url, 'track_data': track}
-                
-                return {'success': False, 'error': 'Треки не найдены в результатах поиска'}
-            else:
-                return {'success': False, 'error': f'HTTP {response.status_code}: {response.text[:200]}'}
-                
+
         except Exception as e:
-            print(f"Ошибка поиска трека: {e}")
+            print(f"❌ Ошибка скачивания: {e}")
+            import traceback
+            traceback.print_exc()
             return {'success': False, 'error': str(e)}
-
-    def download_from_spotify(self, spotify_url):
-        """Скачивает трек через Spotify Downloader API"""
+    
+    def search_and_download(self, track_name, artist_name):
+        """
+        Ищет трек в Spotify API по названию и скачивает через Apify.
+        Пробует несколько вариантов если первый не сработал.
+        """
         try:
-            url = f"https://{self.api_host}/downloadSong"
-            querystring = {"songId": spotify_url}
+            print(f"🔍 Ищем в Spotify: {track_name} - {artist_name}")
             
-            headers = {
-                "x-rapidapi-key": self.api_key,
-                "x-rapidapi-host": self.api_host
-            }
+            # Ищем треки через Spotify Web API
+            tracks = self.search_spotify(track_name, artist_name, limit=5)
             
-            print(f"Запрос к API: {url} с songId: {spotify_url}")
-            response = requests.get(url, headers=headers, params=querystring, timeout=30)
-            print(f"Статус ответа: {response.status_code}")
-
-            if response.status_code == 200:
-                result = response.json()
-                print(f"Ответ API: {result}")
-
-                # Проверяем формат ответа
-                download_link = result.get('data', {}).get('downloadLink') or result.get('downloadLink') or result.get('url')
+            if not tracks:
+                # Если не нашли - возвращаем поисковую ссылку
+                import urllib.parse
+                search_query = f"{track_name} {artist_name}"
+                encoded_query = urllib.parse.quote(search_query)
+                spotify_search_url = f"https://open.spotify.com/search/{encoded_query}"
                 
-                if download_link:
-                    print(f"Найдена ссылка на скачивание: {download_link[:100]}...")
-                    
-                    # Скачиваем файл
-                    file_response = requests.get(download_link, stream=True, timeout=60)
-                    file_response.raise_for_status()
-                    
-                    # Определяем имя файла
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    
-                    # Получаем метаданные
-                    data = result.get('data', result)
-                    title = data.get('title') or data.get('name') or 'unknown'
-                    artist = data.get('artist') or (data.get('artists', [{}])[0].get('name') if data.get('artists') else 'unknown') or 'unknown'
-                    
-                    safe_filename = f"{title} - {artist}".replace('/', '_').replace('\\', '_').replace(':', '_').replace('*', '_').replace('?', '_').replace('"', '_').replace('<', '_').replace('>', '_').replace('|', '_')
-                    filename = f"{safe_filename}_{timestamp}.mp3"
-                    filepath = os.path.join(Config.DOWNLOADS_DIR, filename)
-                    
-                    # Сохраняем файл
-                    print(f"Скачивание файла в: {filepath}")
-                    with open(filepath, 'wb') as f:
-                        for chunk in file_response.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
-                    
-                    print(f"Файл скачан: {filepath}")
-                    
-                    # Добавляем метаданные
-                    cover_url = data.get('cover') or data.get('cover_url') or data.get('image')
-                    try:
-                        self._add_metadata(filepath, title, artist, cover_url)
-                    except Exception as e:
-                        print(f"Не удалось добавить метаданные: {e}")
-                    
-                    return {
-                        'success': True,
-                        'file_path': filepath,
-                        'filename': filename,
-                        'name': title,
-                        'artists': [artist] if isinstance(artist, str) else artist,
-                        'cover': cover_url,
-                        'album': data.get('album'),
-                        'release_date': data.get('releaseDate') or data.get('release_date')
-                    }
+                return {
+                    'success': False,
+                    'error': 'Трек не найден в Spotify',
+                    'spotify_search_url': spotify_search_url,
+                    'title': track_name,
+                    'artist': artist_name
+                }
+            
+            # Пробуем скачать каждый вариант пока не получится
+            last_error = None
+            for i, track in enumerate(tracks[:3]):  # Максимум 3 попытки
+                print(f"🎵 Пробуем [{i+1}]: {track['name']} - {track['artist']}")
+                result = self.download_by_spotify_url(track['url'])
+                
+                if result.get('success'):
+                    return result
                 else:
-                    return {'success': False, 'error': f'Ссылка на скачивание не найдена в ответе API. Ответ: {str(result)[:300]}'}
-            else:
-                return {'success': False, 'error': f'HTTP {response.status_code}: {response.text[:200]}'}
-
-        except Exception as e:
-            print(f"Ошибка скачивания с Spotify: {e}")
-            return {'success': False, 'error': str(e)}
-    
-    def _add_metadata(self, mp3_path, title, artist, cover_url=None):
-        """Добавляет метаданные в MP3 файл"""
-        try:
-            audio = MP3(mp3_path, ID3=ID3)
+                    last_error = result.get('error')
+                    print(f"   ⚠️ Не удалось: {last_error}")
             
-            # Добавляем теги
-            audio.tags.add(TIT2(encoding=3, text=title))
-            audio.tags.add(TPE1(encoding=3, text=artist))
+            # Если ничего не сработало
+            import urllib.parse
+            search_query = f"{track_name} {artist_name}"
+            encoded_query = urllib.parse.quote(search_query)
+            spotify_search_url = f"https://open.spotify.com/search/{encoded_query}"
             
-            # Скачиваем и добавляем обложку
-            if cover_url:
-                try:
-                    response = requests.get(cover_url, timeout=5)
-                    if response.status_code == 200:
-                        audio.tags.add(APIC(
-                            encoding=3,
-                            mime='image/jpeg',
-                            type=3,
-                            desc='Cover',
-                            data=response.content
-                        ))
-                except:
-                    pass  # Игнорируем ошибки обложки
-            
-            audio.save()
-        except Exception as e:
-            print(f"Ошибка добавления метаданных: {e}")
-    
-    def download_track(self, track_name, artist_name):
-        """Скачивает трек через Spotify API"""
-        print(f"Скачивание через Spotify API: {track_name} - {artist_name}")
-
-        # Ищем через API
-        print("Ищем трек через API...")
-        search_result = self.search_spotify_track(track_name, artist_name)
-        if search_result.get('success'):
-            spotify_url = search_result['spotify_url']
-        else:
             return {
                 'success': False,
-                'error': f'Не удалось найти трек через API: {search_result.get("error")}',
-                'name': track_name,
-                'artists': [artist_name]
+                'error': last_error or 'Не удалось скачать трек',
+                'spotify_search_url': spotify_search_url,
+                'title': track_name,
+                'artist': artist_name
             }
+            
+        except Exception as e:
+            print(f"❌ Ошибка: {e}")
+            import traceback
+            traceback.print_exc()
+            return {'success': False, 'error': str(e)}
 
-        print(f"Используем Spotify URL: {spotify_url}")
+    def _try_common_track_ids(self, track_name, artist_name):
+        """Пробует скачать по известным ID для популярных треков"""
+        # Известные Spotify track IDs для популярных треков
+        known_tracks = {
+            'the show must go on': '4K1hoMqLgxLVBphQhxQfcM',  # Queen - The Show Must Go On
+            'we will rock you': '54flyrjcdnQdco7300avMJ',    # Queen - We Will Rock You
+            'bohemian rhapsody': '7tFiyTwD0nx5a1eklYtX2J',   # Queen - Bohemian Rhapsody
+            'dont stop me now': '5T8EDUDqKcs6OSOwEsfqG7',    # Queen - Don't Stop Me Now
+            'somebody to love': '0fDF2c8skOsczCJQSWXQtD',    # Queen - Somebody To Love
+            'i want to break free': '4VMYDCV2IEDYJArNxUaFjT', # Queen - I Want To Break Free
+        }
+        
+        track_lower = track_name.lower()
+        for known_name, track_id in known_tracks.items():
+            if known_name in track_lower:
+                spotify_url = f'https://open.spotify.com/track/{track_id}'
+                print(f"🎯 Используем известный ID: {spotify_url}")
+                return self.download_by_spotify_url(spotify_url)
+        
+        return {'success': False, 'error': f'Трек "{track_name}" не найден. Нужен Spotify URL.'}
 
-        # Скачиваем через Spotify API
-        return self.download_from_spotify(spotify_url)
+    def download_track(self, track_name, artist_name, spotify_url=None):
+        """
+        Скачивает трек. Если есть spotify_url - использует его напрямую.
+        Иначе ищет по названию.
+        """
+        if spotify_url:
+            result = self.download_by_spotify_url(spotify_url)
+            if result.get('success'):
+                return result
+            # Если прямой URL не сработал, пробуем поиск
+            print(f"⚠️ Прямой URL не сработал, пробуем поиск...")
+        
+        # Ищем и скачиваем по названию
+        return self.search_and_download(track_name, artist_name)
+
