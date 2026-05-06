@@ -83,7 +83,7 @@ class ShazamRecognizer:
             import traceback
             traceback.print_exc()
             return {'success': False, 'error': str(e)}
-
+    
     def _process_results(self, data):
         """Обрабатывает результаты от Shazam API"""
         try:

@@ -312,7 +312,7 @@
             } else {
                 trackCover.style.display = 'none';
             }
-
+            
             // Показываем ссылки на стриминговые сервисы
             const streamingLinks = document.getElementById('streamingLinks');
             const spotifyLink = document.getElementById('spotifyLink');
@@ -359,7 +359,7 @@
             } else {
                 audioPlayer.style.display = 'none';
             }
-
+            
             // Показываем блок с информацией
             trackInfo.classList.add('show');
             trackInfo.style.display = 'block';
@@ -431,10 +431,10 @@
         async function handleResponse(response) {
             try {
                 setStatus('🔍 Распознавание трека...', true);
-
+                
                 const data = await response.json();
                 console.log('📊 Ответ сервера:', data);
-
+                
                 if (data.success) {
                     // Проверяем статус скачивания
                     if (data.download && data.download.success) {
