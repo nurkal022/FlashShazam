@@ -66,7 +66,7 @@ class AudioRecorder:
             print(f"Ошибка проверки уровня: {e}")
             return 0.0
         
-    def record(self, duration=Config.RECORDING_DURATION):
+    def record(self, duration=Config.RECORDING_DURATION, should_continue=None):
         """Записывает аудио с микрофона"""
         audio = pyaudio.PyAudio()
         
@@ -96,20 +96,24 @@ class AudioRecorder:
             
             print("Начало записи...")
             
+            cancelled = False
             for i in range(total_chunks):
                 try:
                     data = stream.read(self.chunk, exception_on_overflow=False)
                     frames.append(data)
-                    
-                    # Проверяем уровень звука в записанных данных
+
                     level = self.check_audio_level(data)
                     if level > max_level_found:
                         max_level_found = level
-                    
-                    # Показываем прогресс каждые 3 секунды
+
                     if i % (int(self.rate / self.chunk * 3)) == 0:
                         elapsed = i * self.chunk / self.rate
                         print(f"  Запись... {elapsed:.1f}с (текущий уровень: {level:.1f}%, макс: {max_level_found:.1f}%)")
+
+                    if should_continue is not None and not should_continue():
+                        print("⏹  Запись отменена пользователем")
+                        cancelled = True
+                        break
                 except Exception as e:
                     print(f"Ошибка чтения данных: {e}")
                     break
@@ -128,12 +132,15 @@ class AudioRecorder:
             
             stream.stop_stream()
             stream.close()
-            
-            # Проверяем что записали данные
+
+            if cancelled:
+                audio.terminate()
+                return None
+
             total_bytes = sum(len(f) for f in frames)
             if total_bytes == 0:
                 raise Exception("Запись пустая - проверьте микрофон и уровень звука")
-            
+
             print(f"Записано {total_bytes} байт данных")
             
         except Exception as e:

@@ -244,6 +244,38 @@ class Display:
 
         self._animate(frame, fps=8)
 
+    def show_cancelled(self):
+        self.stop_animation()
+        img = Image.new("1", (self.width, self.height), 0)
+        draw = ImageDraw.Draw(img)
+        f = self._font(16)
+        text = "CANCELLED"
+        bbox = draw.textbbox((0, 0), text, font=f)
+        x = (self.width - (bbox[2] - bbox[0])) // 2
+        y = (self.height - (bbox[3] - bbox[1])) // 2 - 4
+        draw.text((x, y), text, fill=1, font=f)
+        self.display_image(img)
+
+    def show_confirm(self, title, artist):
+        """Распознано — спрашиваем: скачивать или пропустить."""
+        self.stop_animation()
+        img = Image.new("1", (self.width, self.height), 0)
+        draw = ImageDraw.Draw(img)
+        f_title = self._font(13)
+        f_artist = self._font(11)
+        f_meta = self._font(9)
+
+        title_lines = self._wrap(draw, title, f_title, self.width - 6)
+        for i, line in enumerate(title_lines[:2]):
+            draw.text((3, 2 + i * 15), line, fill=1, font=f_title)
+        artist_y = 2 + len(title_lines[:2]) * 15 + 2
+        artist_line = self._wrap(draw, artist, f_artist, self.width - 6)[0]
+        draw.text((3, artist_y), artist_line, fill=1, font=f_artist)
+
+        draw.line((0, 51, self.width - 1, 51), fill=1)
+        draw.text((3, 53), "tap=DL  hold=skip", fill=1, font=f_meta)
+        self.display_image(img)
+
     def show_result(self, title, artist, size_mb=None):
         """Финальный экран: остаётся на дисплее до следующего нажатия."""
         self.stop_animation()
