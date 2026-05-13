@@ -44,7 +44,7 @@ class ShazamRecognizer:
                 # Ожидаем результаты
                 for attempt in range(15):
                     time.sleep(2)
-                    results_response = requests.get(f"{self.results_url}{uuid}", headers=headers, timeout=10)
+                    results_response = requests.post(f"{self.results_url}{uuid}", headers=headers, timeout=10)
                     results_response.raise_for_status()
                     results_data = results_response.json()
 
