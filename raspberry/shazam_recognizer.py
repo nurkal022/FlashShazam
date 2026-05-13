@@ -48,14 +48,15 @@ class ShazamRecognizer:
                     results_response.raise_for_status()
                     results_data = results_response.json()
 
-                    if results_data.get('status') == 'finished':
+                    status = results_data.get('status')
+                    if status in ('finished', 'completed', 'done'):
                         if results_data.get('results'):
                             track_info = results_data['results'][0].get('track', {})
                             if track_info:
                                 return self._parse_track_info(track_info)
                         return {'success': False, 'error': 'Трек не распознан'}
-                    
-                    elif results_data.get('status') == 'error':
+
+                    elif status == 'error':
                         return {'success': False, 'error': results_data.get('error', 'Ошибка API')}
                     
                     print(f"   Обработка... (попытка {attempt + 1})")
