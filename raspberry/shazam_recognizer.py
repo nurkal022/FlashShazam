@@ -41,8 +41,8 @@ class ShazamRecognizer:
                 print(f"✅ UUID: {uuid}")
                 print("🔄 Ожидаем результаты...")
 
-                # Ожидаем результаты
-                for attempt in range(15):
+                # Ожидаем результаты (до 60 сек)
+                for attempt in range(30):
                     time.sleep(2)
                     results_response = requests.post(f"{self.results_url}{uuid}", headers=headers, timeout=10)
                     results_response.raise_for_status()
